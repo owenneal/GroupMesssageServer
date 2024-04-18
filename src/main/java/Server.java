@@ -4,46 +4,44 @@ import java.io.Serializable;
 import java.net.ServerSocket;
 import java.net.Socket;
 import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
 import java.util.function.Consumer;
 import javafx.application.Platform;
+import javafx.collections.ObservableList;
 import javafx.scene.control.ListView;
-/*
- * Clicker: A: I really get it    B: No idea what you are talking about
- * C: kind of following
- */
 
 public class Server{
 
 	int count = 1; //count of clients threads
-	ArrayList<ClientThread> clients = new ArrayList<ClientThread>();
+	ArrayList<ClientThread> clients = new ArrayList<>();
+	private final Object lock = new Object();
 	TheServer server;
 	private Consumer<Serializable> callback;
+	ArrayList<String> users = new ArrayList<>();
+	HashMap<String, List<String>> groups = new HashMap<>();
 
 	Server(Consumer<Serializable> call){
 		callback = call;
 		server = new TheServer();
 		server.start();
 	}
-	
-	
+
 	public class TheServer extends Thread{
-		
+
 		public void run() {
 		
-			try(ServerSocket mysocket = new ServerSocket(5555);){
-		    System.out.println("Server is waiting for a client!");
+			try(ServerSocket mysocket = new ServerSocket(5555)){
+		    	System.out.println("Server is waiting for a client!");
 
 			//while loop to keep server running
 			//creates new client thread for each client that connects
 		    while(true) {
-		
 				ClientThread c = new ClientThread(mysocket.accept(), count);
-				callback.accept("client has connected to server: " + "client #" + count);
+				callback.accept("Client has connected to server: " + "client #" + count);
 				clients.add(c);
 				c.start();
-				
 				count++;
-				
 			    }
 			}//end of try
 				catch(Exception e) {
@@ -54,26 +52,64 @@ public class Server{
 	
 
 		class ClientThread extends Thread{
-
 			Socket connection;
 			int count;
 			ObjectInputStream in;
 			ObjectOutputStream out;
 			private String username;
-			
+
 			ClientThread(Socket s, int count){
 				this.connection = s;
 				this.count = count;
-//				this.username = username;
 			}
-			
-			public void updateClients(String message) {
-				for(int i = 0; i < clients.size(); i++) {
-					ClientThread t = clients.get(i);
-					try {
-					 t.out.writeObject(message);
+
+			public void setUsername(String name) {
+				this.username = name;
+			}
+
+			public String getUsername() {
+				return this.username;
+			}
+
+			public void updateClients(Message message) {
+				synchronized (lock) {
+					for (ClientThread t : clients) {
+						try {
+							if (message.getReceiver() == null || message.getReceiver().contains(t.getUsername())) {
+									t.out.writeObject(message);
+									t.out.flush();
+							}
+						} catch (Exception nullPointer) {
+						}
 					}
-					catch(Exception e) {}
+				}
+			}
+
+			public void sendGroupMessage(Message message) {
+				System.out.println("sending group message to: " + message.getGroupName());
+				synchronized (lock) {
+					for (ClientThread t : clients) {
+						try {
+							List<String> groupMembers = groups.get(message.getGroupName());
+							for (String user : groupMembers) {
+								if (user.equals(t.getUsername())) {
+									t.out.writeObject(message);
+									t.out.flush();
+								}
+							}
+						} catch (Exception nullPointer) {
+						}
+					}
+				}
+			}
+
+			public void sendUsernames() {
+				ArrayList<String> usernames = new ArrayList<>();
+				synchronized (lock) {
+					for (ClientThread t : clients) {
+						usernames.add(t.getUsername());
+					}
+					updateClients(new Message(null, usernames, "users on server" + usernames, "connectedClients", null));
 				}
 			}
 			
@@ -82,25 +118,61 @@ public class Server{
 				try {
 					in = new ObjectInputStream(connection.getInputStream());
 					out = new ObjectOutputStream(connection.getOutputStream());
-					connection.setTcpNoDelay(true);	
+					connection.setTcpNoDelay(true);
 				}
 				catch(Exception e) {
 					System.out.println("Streams not open");
 				}
-				
-				updateClients("new client on server: client #"+count);
-					
+
 				 while(true) {
 					    try {
-					    	String data = in.readObject().toString();
-					    	callback.accept("client: " + count + " sent: " + data);
-					    	updateClients("client #"+count+" said: "+data);
-					    	
-					    	}
+					    	Message data = (Message) in.readObject();
+							if (data.getType().equals("message")) {
+								callback.accept(data.getSender() + " sent: " + data.getMessage());
+								System.out.println("message rec" + data.getReceiver());
+								if (data.getGroupName() != null) {
+									sendGroupMessage(data);
+								} else {
+									updateClients(data);
+								}
+							} else if (data.getType().equals("joined")) {
+								users.add(data.getSender());
+								setUsername(data.getSender());
+								updateClients(new Message(data.getSender(), null, " has joined the chat", "joined", null));
+								sendUsernames();
+								callback.accept(data.getSender() + data.getMessage());
+
+								//global group update
+								if (!groups.containsKey("Global")) {
+									groups.put("Global", new ArrayList<>());
+								}
+								groups.get("Global").add(data.getSender());
+								sendGroupMessage(new Message(null, groups.get("Global"), "Global", "group", "Global")); //update Global group with new user
+								System.out.println("Global group" + groups);
+							} else if (data.getType().equals("group")) {
+								if (!groups.containsKey(data.getGroupName())) {
+									groups.put(data.getGroupName(), data.getReceiver());
+									System.out.println("New group" + groups);
+								}
+								sendGroupMessage(data);
+							} else if (data.getType().equals("usernameCheck")) {
+								if (users.contains(data.getSender())) {
+									out.writeObject(new Message(null, null, "Username already taken", "usernameCheck", null));
+									out.flush();
+								} else {
+									out.writeObject(new Message(null, null, "Username available", "usernameCheck", null));
+									out.flush();
+								}
+							}
+						}
 					    catch(Exception e) {
 					    	callback.accept("OOOOPPs...Something wrong with the socket from client: " + count + "....closing down!");
-					    	updateClients("Client #"+count+" has left the server!");
+					    	//updateClients("Client #"+count+" has left the server!");
+							updateClients(new Message(this.username, null, " has left the chat", "left", null));
 					    	clients.remove(this);
+							users.remove(this.username);
+							groups.get("Global").remove(this.username);
+							sendUsernames();
 					    	break;
 					    }
 					}
