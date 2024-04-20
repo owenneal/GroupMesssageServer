@@ -7,9 +7,9 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.function.Consumer;
-import javafx.application.Platform;
-import javafx.collections.ObservableList;
-import javafx.scene.control.ListView;
+
+//Owen Neal
+//CS 342
 
 public class Server{
 
@@ -103,6 +103,20 @@ public class Server{
 				}
 			}
 
+			public void sendGroupList() {
+				List<String> groupNames = new ArrayList<>(groups.keySet());
+                synchronized (lock) {
+					for (ClientThread t : clients) {
+						try {
+							t.out.writeObject(new Message(null, groupNames, "List of groups", "groupList", null));
+							t.out.flush();
+						} catch (Exception e) {
+							System.out.println("Error sending group list");
+						}
+					}
+				}
+			}
+
 			public void sendUsernames() {
 				ArrayList<String> usernames = new ArrayList<>();
 				synchronized (lock) {
@@ -129,35 +143,37 @@ public class Server{
 					    	Message data = (Message) in.readObject();
 							if (data.getType().equals("message")) {
 								callback.accept(data.getSender() + " sent: " + data.getMessage());
-								System.out.println("message rec" + data.getReceiver());
 								if (data.getGroupName() != null) {
 									sendGroupMessage(data);
 								} else {
 									updateClients(data);
 								}
 							} else if (data.getType().equals("joined")) {
-								users.add(data.getSender());
-								setUsername(data.getSender());
-								updateClients(new Message(data.getSender(), null, " has joined the chat", "joined", null));
-								sendUsernames();
-								callback.accept(data.getSender() + data.getMessage());
+								if (!users.contains(data.getSender())) {
+									users.add(data.getSender());
+									setUsername(data.getSender());
+									updateClients(new Message(data.getSender(), null, " has joined the chat", "joined", null));
+									sendUsernames(); //update all clients with new user
+									callback.accept(data.getSender() + data.getMessage());
 
-								//global group update
-								if (!groups.containsKey("Global")) {
-									groups.put("Global", new ArrayList<>());
+									//global group update
+									if (!groups.containsKey("Global")) {
+										groups.put("Global", new ArrayList<>());
+									}
+									groups.get("Global").add(data.getSender());
+									sendGroupMessage(new Message(null, groups.get("Global"), "Global", "group", "Global")); //update Global group with new user
 								}
-								groups.get("Global").add(data.getSender());
-								sendGroupMessage(new Message(null, groups.get("Global"), "Global", "group", "Global")); //update Global group with new user
-								System.out.println("Global group" + groups);
 							} else if (data.getType().equals("group")) {
 								if (!groups.containsKey(data.getGroupName())) {
 									groups.put(data.getGroupName(), data.getReceiver());
 									System.out.println("New group" + groups);
 								}
 								sendGroupMessage(data);
+								sendGroupList();
 							} else if (data.getType().equals("usernameCheck")) {
+								System.out.println("Checking username: " + users.contains(data.getSender()));
 								if (users.contains(data.getSender())) {
-									out.writeObject(new Message(null, null, "Username already taken", "usernameCheck", null));
+									out.writeObject(new Message(null, null, "Username taken", "usernameCheck", null));
 									out.flush();
 								} else {
 									out.writeObject(new Message(null, null, "Username available", "usernameCheck", null));
@@ -171,7 +187,10 @@ public class Server{
 							updateClients(new Message(this.username, null, " has left the chat", "left", null));
 					    	clients.remove(this);
 							users.remove(this.username);
-							groups.get("Global").remove(this.username);
+							if (groups.containsKey("Global")) {
+								groups.get("Global").remove(this.username);
+							}
+							//groups.get("Global").remove(this.username);
 							sendUsernames();
 					    	break;
 					    }
